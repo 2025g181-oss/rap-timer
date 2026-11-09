@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>カメラ自動ラップタイマー (テスト版)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #e0e0e0; text-align: center; margin: 0; padding: 15px; }
+  h1 { font-size: 1.4rem; margin: 0 0 10px 0; color: #ffffff; }
+  
+  .container { max-width: 640px; margin: 0 auto; }
+  
+  .video-wrapper { position: relative; width: 100%; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #333; }
+  video { width: 100%; display: block; height: auto; }
+  canvas#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  
+  .timer-display { font-size: 3.5rem; font-family: "Courier New", Courier, monospace; font-weight: bold; margin: 15px 0; color: #00ffcc; text-shadow: 0 0 10px rgba(0,255,204,0.3); }
+  
+  .status-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; margin-bottom: 10px; }
+  .status-off { background: #444; color: #aaa; }
+  .status-arm { background: #d32f2f; color: #fff; animation: blink 1.5s infinite; }
+  .status-running { background: #388e3c; color: #fff; }
+  
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  
+  .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 15px; flex-wrap: wrap; }
+  button { padding: 12px 20px; font-size: 1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; min-width: 100px; }
+  button:active { transform: scale(0.96); }
+  .btn-primary { background: #0288d1; color: white; }
+  .btn-danger { background: #d32f2f; color: white; }
+  .btn-warning { background: #f57c00; color: white; }
+  .btn-secondary { background: #424242; color: white; }
+  
+  .panel { background: #1e1e1e; border-radius: 10px; padding: 15px; margin-bottom: 15px; text-align: left; border: 1px solid #333; }
+  .panel h2 { font-size: 1rem; margin-top: 0; margin-bottom: 10px; color: #00bcd4; border-bottom: 1px solid #333; padding-bottom: 5px; }
+  
+  .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .setting-row label { font-size: 0.9rem; }
+  .setting-row input[type="range"] { width: 50%; }
+  .setting-row select { padding: 6px; border-radius: 6px; background: #333; color: white; border: 1px solid #555; }
+  
+  .val-badge { background: #333; padding: 2px 8px; border-radius: 4px; font-family: monospace; }
+  
+  .lap-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 0.95rem; }
+  .lap-table th, .lap-table td { padding: 8px; text-align: left; border-bottom: 1px solid #333; }
+  .lap-table th { color: #888; }
+  .best-lap { color: #00ffcc; font-weight: bold; }
+  
+  .meter-bar { width: 100%; height: 10px; background: #333; border-radius: 5px; overflow: hidden; margin-top: 5px; }
+  .meter-fill { height: 100%; width: 0%; background: #00ffcc; transition: width 0.05s; }
+  .meter-fill.triggered { background: #ff5722; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>📷 カメラ自動ラップタイマー</h1>
+  
+  <div class="video-wrapper">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  
+  <div style="margin-top: 10px;">
+    <div id="statusBadge" class="status-badge status-off">待機中 (自動計測 OFF)</div>
+  </div>
+  
+  <div class="timer-display" id="timerDisplay">00:00.000</div>
+  
+  <div>
+    <div style="font-size: 0.8rem; color: #aaa; text-align: left;">変化検知レベル:</div>
+    <div class="meter-bar">
+      <div id="meterFill" class="meter-fill"></div>
+    </div>
+  </div>
+  
+  <div class="controls" style="margin-top: 15px;">
+    <button id="btnArm" class="btn-primary">自動計測 ON</button>
+    <button id="btnReset" class="btn-secondary">リセット</button>
+    <button id="btnCamSwitch" class="btn-secondary">カメラ切替</button>
+  </div>
+  
+  <div class="panel">
+    <h2>⚙️ 設定</h2>
+    <div class="setting-row">
+      <label>検知感度 (しきい値): <span id="sensVal" class="val-badge">25</span></label>
+      <input type="range" id="sensInput" min="5" max="80" value="25">
+    </div>
+    <div class="setting-row">
+      <label>クールダウン (誤動作防止): <span id="cdVal" class="val-badge">1.5s</span></label>
+      <input type="range" id="cdInput" min="0.5" max="5.0" step="0.1" value="1.5">
+    </div>
+    <div class="setting-row">
+      <label>カメラ選択:</label>
+      <select id="cameraSelect"><option value="">読み込み中...</option></select>
+    </div>
+  </div>
+  
+  <div class="panel">
+    <h2>⏱️ ラップタイム記録</h2>
+    <table class="lap-table">
+      <thead>
+        <tr>
+          <th>Lap</th>
+          <th>タイム</th>
+          <th>差分</th>
+        </tr>
+      </thead>
+      <tbody id="lapTableBody">
+        <tr><td colspan="3" style="text-align: center; color: #666;">記録なし</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const ctx = overlay.getContext('2d');
+  const timerDisplay = document.getElementById('timerDisplay');
+  const statusBadge = document.getElementById('statusBadge');
+  const meterFill = document.getElementById('meterFill');
+  
+  const btnArm = document.getElementById('btnArm');
+  const btnReset = document.getElementById('btnReset');
+  const btnCamSwitch = document.getElementById('btnCamSwitch');
+  
+  const sensInput = document.getElementById('sensInput');
+  const sensVal = document.getElementById('sensVal');
+  const cdInput = document.getElementById('cdInput');
+  const cdVal = document.getElementById('cdVal');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const lapTableBody = document.getElementById('lapTableBody');
+
+  let currentStream = null;
+  let devices = [];
+  let currentDeviceIndex = 0;
+
+  // 計測状態
+  let isArmed = false;
+  let isRunning = false;
+  let startTime = 0;
+  let timerInterval = null;
+  let lastTriggerTime = 0;
+  let lapTimes = [];
+
+  // 画像処理用キャンバス (非表示)
+  const procCanvas = document.createElement('canvas');
+  const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
+  let prevRoiData = null;
+
+  // カメラの初期化
+  async function initCamera() {
+    try {
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      devices = allDevices.filter(d => d.kind === 'videoinput');
+      
+      cameraSelect.innerHTML = '';
+      devices.forEach((dev, idx) => {
+        const opt = document.createElement('option');
+        opt.value = dev.deviceId;
+        opt.textContent = dev.label || `カメラ ${idx + 1}`;
+        cameraSelect.appendChild(opt);
+      });
+
+      // 背面カメラを優先選択
+      const envCamIndex = devices.findIndex(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment'));
+      if (envCamIndex !== -1) currentDeviceIndex = envCamIndex;
+
+      if (devices.length > 0) {
+        cameraSelect.value = devices[currentDeviceIndex].deviceId;
+        await startStream(devices[currentDeviceIndex].deviceId);
+      }
+    } catch (e) {
+      alert('カメラの初期化に失敗しました: ' + e.message);
+    }
+  }
+
+  async function startStream(deviceId) {
+    if (currentStream) {
+      currentStream.getTracks().forEach(track => track.stop());
+    }
+    const constraints = {
+      video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' }
+    };
+    try {
+      currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = currentStream;
+      video.onloadedmetadata = () => {
+        video.play();
+        resizeOverlay();
+        requestAnimationFrame(processFrame);
+      };
+    } catch (e) {
+      console.error(e);
+      // Fallback
+      currentStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = currentStream;
+      video.play();
+      resizeOverlay();
+      requestAnimationFrame(processFrame);
+    }
+  }
+
+  function resizeOverlay() {
+    overlay.width = video.videoWidth || 640;
+    overlay.height = video.videoHeight || 480;
+    procCanvas.width = overlay.width;
+    procCanvas.height = overlay.height;
+  }
+
+  window.addEventListener('resize', resizeOverlay);
+
+  // フレーム解析処理
+  function processFrame() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      const w = overlay.width;
+      const h = overlay.height;
+
+      // オーバーレイ描画クリア
+      ctx.clearRect(0, 0, w, h);
+
+      // 計測ライン（ROI: Region of Interest）の位置設定
+      // 画面中央の縦線エリア (幅 40px)
+      const roiWidth = Math.max(30, Math.floor(w * 0.08));
+      const roiX = Math.floor((w - roiWidth) / 2);
+      const roiY = 0;
+      const roiHeight = h;
+
+      // 画像処理用キャンバスにビデオフレームを描画
+      procCtx.drawImage(video, 0, 0, w, h);
+      const imgData = procCtx.getImageData(roiX, roiY, roiWidth, roiHeight);
+      const data = imgData.data;
+
+      // 平均輝度計算
+      let totalLuma = 0;
+      const pixelCount = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) {
+        // Luma formula: 0.299R + 0.587G + 0.114B
+        totalLuma += (data[i] * 299 + data[i+1] * 587 + data[i+2] * 114) / 1000;
+      }
+      const avgLuma = totalLuma / pixelCount;
+
+      let diff = 0;
+      if (prevRoiData !== null) {
+        diff = Math.abs(avgLuma - prevRoiData);
+      }
+      prevRoiData = avgLuma;
+
+      // インジケーター表示の更新
+      const threshold = parseInt(sensInput.value, 10);
+      const meterPercent = Math.min(100, (diff / threshold) * 100);
+      meterFill.style.width = meterPercent + '%';
+
+      // ROI（計測エリア）の枠線描画
+      const now = performance.now();
+      const cooldownMs = parseFloat(cdInput.value) * 1000;
+      const inCooldown = (now - lastTriggerTime) < cooldownMs;
+
+      if (diff >= threshold && !inCooldown && isArmed) {
+        // 通過検知トリガー発動
+        meterFill.classList.add('triggered');
+        ctx.strokeStyle = '#ff3300';
+        ctx.fillStyle = 'rgba(255, 51, 0, 0.3)';
+        onVehicleDetected(now);
+      } else {
+        meterFill.classList.remove('triggered');
+        if (inCooldown) {
+          ctx.strokeStyle = '#ff9800';
+          ctx.fillStyle = 'rgba(255, 152, 0, 0.15)';
+        } else if (isArmed) {
+          ctx.strokeStyle = '#00ffcc';
+          ctx.fillStyle = 'rgba(0, 255, 204, 0.15)';
+        } else {
+          ctx.strokeStyle = '#666666';
+          ctx.fillStyle = 'rgba(100, 100, 100, 0.1)';
+        }
+      }
+
+      // ROI枠を描画
+      ctx.lineWidth = 4;
+      ctx.fillRect(roiX, roiY, roiWidth, roiHeight);
+      ctx.strokeRect(roiX, roiY, roiWidth, roiHeight);
+
+      // 中央のスタート/フィニッシュ点線
+      ctx.beginPath();
+      ctx.setLineDash([10, 10]);
+      ctx.moveTo(w / 2, 0);
+      ctx.lineTo(w / 2, h);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    requestAnimationFrame(processFrame);
+  }
+
+  // 車両検知時の処理
+  function onVehicleDetected(now) {
+    lastTriggerTime = now;
+
+    if (!isRunning) {
+      // 計測開始 (1周目のスタート)
+      startTime = now;
+      isRunning = true;
+      statusBadge.textContent = '計測中...';
+      statusBadge.className = 'status-badge status-running';
+      startTimerUpdate();
+    } else {
+      // ラップ完了
+      const lapTimeMs = now - startTime;
+      startTime = now; // 次のラップのスタート時刻に設定
+      
+      lapTimes.push(lapTimeMs);
+      updateLapTable();
+    }
+  }
+
+  function startTimerUpdate() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      if (!isRunning) return;
+      const elapsed = performance.now() - startTime;
+      timerDisplay.textContent = formatTime(elapsed);
+    }, 31); // 約30fpsで表示更新
+  }
+
+  function formatTime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    const milli = Math.floor(ms % 1000);
+    
+    const mm = String(min).padStart(2, '0');
+    const ss = String(sec).padStart(2, '0');
+    const mmm = String(milli).padStart(3, '0');
+    return `${mm}:${ss}.${mmm}`;
+  }
+
+  function updateLapTable() {
+    if (lapTimes.length === 0) {
+      lapTableBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: #666;">記録なし</td></tr>';
+      return;
+    }
+
+    const minTime = Math.min(...lapTimes);
+    let html = '';
+
+    lapTimes.forEach((t, idx) => {
+      const isBest = t === minTime && lapTimes.length > 1;
+      const diffText = idx === 0 ? '-' : (t - lapTimes[idx - 1] > 0 ? `+${((t - lapTimes[idx - 1])/1000).toFixed(3)}` : `${((t - lapTimes[idx - 1])/1000).toFixed(3)}`);
+      
+      html += `
+        <tr class="${isBest ? 'best-lap' : ''}">
+          <td>L${idx + 1} ${isBest ? '⭐' : ''}</td>
+          <td>${formatTime(t)}</td>
+          <td>${diffText}</td>
+        </tr>
+      `;
+    });
+
+    lapTableBody.innerHTML = html;
+  }
+
+  // イベント設定
+  btnArm.addEventListener('click', () => {
+    isArmed = !isArmed;
+    if (isArmed) {
+      btnArm.textContent = '自動計測 OFF';
+      btnArm.className = 'btn-danger';
+      if (!isRunning) {
+        statusBadge.textContent = 'カメラ監視中 (通過待ち)';
+        statusBadge.className = 'status-badge status-arm';
+      }
+    } else {
+      btnArm.textContent = '自動計測 ON';
+      btnArm.className = 'btn-primary';
+      if (!isRunning) {
+        statusBadge.textContent = '待機中 (自動計測 OFF)';
+        statusBadge.className = 'status-badge status-off';
+      }
+    }
+  });
+
+  btnReset.addEventListener('click', () => {
+    isRunning = false;
+    isArmed = false;
+    clearInterval(timerInterval);
+    startTime = 0;
+    lapTimes = [];
+    timerDisplay.textContent = '00:00.000';
+    statusBadge.textContent = '待機中 (自動計測 OFF)';
+    statusBadge.className = 'status-badge status-off';
+    btnArm.textContent = '自動計測 ON';
+    btnArm.className = 'btn-primary';
+    updateLapTable();
+  });
+
+  btnCamSwitch.addEventListener('click', async () => {
+    if (devices.length <= 1) return;
+    currentDeviceIndex = (currentDeviceIndex + 1) % devices.length;
+    cameraSelect.value = devices[currentDeviceIndex].deviceId;
+    await startStream(devices[currentDeviceIndex].deviceId);
+  });
+
+  cameraSelect.addEventListener('change', async (e) => {
+    await startStream(e.target.value);
+  });
+
+  sensInput.addEventListener('input', (e) => {
+    sensVal.textContent = e.target.value;
+  });
+
+  cdInput.addEventListener('input', (e) => {
+    cdVal.textContent = e.target.value + 's';
+  });
+
+  // 初期化実行
+  initCamera();
+</script>
+
+</body>
+</html>
